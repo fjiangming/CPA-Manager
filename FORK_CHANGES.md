@@ -181,3 +181,153 @@ cd .. && npm run build
 # 5. 推送触发自动构建
 git push origin main
 ```
+
+---
+
+## 部署指南
+
+### 前置条件
+
+- Docker 和 Docker Compose 已安装
+- CPA（CLI Proxy API）服务已运行，且已启用 Management
+
+### 1. Docker Compose 部署
+
+创建部署目录并编写配置：
+
+```bash
+mkdir -p /opt/cpa-manager && cd /opt/cpa-manager
+```
+
+创建 `docker-compose.yml`：
+
+```yaml
+services:
+  cpa-manager:
+    image: ghcr.io/fjiangming/cpa-manager:latest
+    container_name: cpa-manager
+    restart: unless-stopped
+    ports:
+      - "18317:18317"
+    volumes:
+      - cpa-data:/data
+    environment:
+      - HTTP_ADDR=0.0.0.0:18317
+      - USAGE_DATA_DIR=/data
+      - USAGE_DB_PATH=/data/usage.sqlite
+      # - CPA_UPSTREAM_URL=http://cpa-host:8317       # CPA 上游地址（也可在 Web UI 登录时填写）
+      # - CPA_MANAGEMENT_KEY=your-key                  # Management Key（也可在 Web UI 登录时填写）
+      # - USAGE_COLLECTOR_MODE=auto                    # 采集模式：auto / http / resp
+      # - USAGE_RESP_QUEUE=usage                       # RESP 队列名称
+      # - USAGE_RESP_POP_SIDE=right                    # RESP 弹出方向：left / right
+      # - USAGE_BATCH_SIZE=100                         # 每次批量拉取条数
+      # - USAGE_POLL_INTERVAL_MS=500                   # 轮询间隔（毫秒）
+      # - USAGE_QUERY_LIMIT=50000                      # 查询结果上限
+      # - USAGE_CORS_ORIGINS=*                         # CORS 允许来源（逗号分隔）
+      # - USAGE_RESP_TLS_SKIP_VERIFY=false             # 跳过 TLS 验证（RESP 模式）
+
+volumes:
+  cpa-data:
+```
+
+### 环境变量参考
+
+| 变量名 | 默认值 | 说明 |
+|--------|--------|------|
+| `HTTP_ADDR` | `0.0.0.0:18317` | 服务监听地址和端口 |
+| `USAGE_DATA_DIR` | `/data` | 数据存储目录（SQLite 等） |
+| `USAGE_DB_PATH` | `/data/usage.sqlite` | SQLite 数据库文件路径 |
+| `CPA_UPSTREAM_URL` | _(空)_ | CPA 上游服务地址，如 `http://cpa-host:8317`。为空时需在 Web UI 登录页填写 |
+| `CPA_MANAGEMENT_KEY` | _(空)_ | CPA Management Key。为空时需在 Web UI 登录页填写 |
+| `CPA_MANAGEMENT_KEY_FILE` | `/run/secrets/cpa_management_key` | Management Key 文件路径（Docker Secrets 场景） |
+| `CPA_MANAGER_CONFIG` | _(空)_ | 指定外部 JSON 配置文件路径，覆盖默认的 `config.json` |
+| `USAGE_COLLECTOR_MODE` | `auto` | 采集模式：`auto`（自动选择）/ `http`（仅 HTTP 队列）/ `resp`（仅 RESP 协议） |
+| `USAGE_RESP_QUEUE` | `usage` | RESP 协议队列名称 |
+| `USAGE_RESP_POP_SIDE` | `right` | RESP 协议弹出方向：`left` / `right` |
+| `USAGE_BATCH_SIZE` | `100` | 每次从队列批量拉取的条数 |
+| `USAGE_POLL_INTERVAL_MS` | `500` | 队列轮询间隔（毫秒） |
+| `USAGE_QUERY_LIMIT` | `50000` | 用量查询结果上限 |
+| `PANEL_PATH` | _(空)_ | 自定义管理面板 HTML 文件路径（覆盖内置面板） |
+| `USAGE_CORS_ORIGINS` | `*` | CORS 允许的来源列表（逗号分隔，如 `http://a.com,http://b.com`） |
+| `USAGE_RESP_TLS_SKIP_VERIFY` | `false` | 是否跳过 RESP 连接的 TLS 证书验证 |
+
+> **提示**：大多数场景下只需配置前 3 个变量（`HTTP_ADDR`、`USAGE_DATA_DIR`、`USAGE_DB_PATH`），其余在 Web UI 登录时或通过默认值即可工作。
+
+启动服务：
+
+```bash
+docker compose up -d
+```
+
+访问管理面板：
+
+```
+http://<你的服务器IP>:18317/management.html
+```
+
+首次登录时填写你的 CPA 上游地址（如 `http://cpa-host:8317`）和 Management Key。
+
+### 2. 自定义端口
+
+如需修改对外端口，只需调整 `ports` 映射：
+
+```yaml
+ports:
+  - "9090:18317"   # 对外 9090，容器内仍为 18317
+```
+
+### 3. 升级更新
+
+代码推送到 `main` 分支后，GitHub Actions 会自动构建新镜像。服务器上执行：
+
+```bash
+cd /opt/cpa-manager
+
+# 拉取最新镜像
+docker compose pull
+
+# 用新镜像重建容器（数据卷不受影响）
+docker compose up -d
+```
+
+> **数据安全**：SQLite 数据库存储在 Docker Volume `cpa-data` 中，升级不会丢失数据。
+
+如需确认当前运行的镜像版本：
+
+```bash
+docker inspect cpa-manager --format '{{.Image}}' | cut -c1-12
+docker images ghcr.io/fjiangming/cpa-manager --format '{{.ID}} {{.Tag}} {{.CreatedAt}}'
+```
+
+### 4. 完全卸载
+
+```bash
+cd /opt/cpa-manager
+
+# 停止并删除容器
+docker compose down
+
+# 删除数据卷（⚠️ 这将永久删除所有巡检历史和用量统计数据）
+docker volume rm cpa-manager_cpa-data
+
+# 删除本地镜像
+docker rmi ghcr.io/fjiangming/cpa-manager:latest
+
+# 删除部署目录
+cd / && rm -rf /opt/cpa-manager
+```
+
+> ⚠️ `docker volume rm` 会永久删除数据库，操作前请确认不再需要历史数据。如需备份：
+> ```bash
+> docker cp cpa-manager:/data/usage.sqlite ./usage.sqlite.bak
+> ```
+
+### 5. 查看日志
+
+```bash
+# 实时日志
+docker compose logs -f cpa-manager
+
+# 最近 100 行
+docker compose logs --tail 100 cpa-manager
+```
