@@ -45,6 +45,19 @@
 
 ## 修改的原有文件（可能冲突）
 
+### 0. `Dockerfile.usage-service`
+
+**改动位置**：
+- 第 1 行：`node:22-alpine` → `node:24-alpine`
+
+**改动原因**：
+- 原 `release.yml` 中 `setup-node` 已使用 node 24，但 Dockerfile 仍用 node 22
+- node 24 生成的 `package-lock.json`（lockfileVersion 3）与 node 22 的 `npm ci` 不兼容
+
+**冲突解决策略**：
+- ✅ **保留本 fork 的改动** — 保持 Dockerfile 和 CI 中 Node 版本一致
+- 如果上游也升级了 Node 版本，以上游版本为准即可
+
 ### 1. `usage-service/internal/store/store.go`
 
 **改动位置**：
