@@ -12,6 +12,7 @@ import (
 	"github.com/seakee/cpa-manager/usage-service/internal/collector"
 	"github.com/seakee/cpa-manager/usage-service/internal/config"
 	"github.com/seakee/cpa-manager/usage-service/internal/httpapi"
+	"github.com/seakee/cpa-manager/usage-service/internal/inspection"
 	"github.com/seakee/cpa-manager/usage-service/internal/store"
 )
 
@@ -27,6 +28,7 @@ func main() {
 	defer db.Close()
 
 	manager := collector.NewManager(cfg, db)
+	scheduler := inspection.NewScheduler(db)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -37,6 +39,7 @@ func main() {
 			Queue:          cfg.Queue,
 			PopSide:        cfg.PopSide,
 		})
+		scheduler.Start(ctx, cfg.CPAUpstreamURL, cfg.ManagementKey)
 	} else if setup, ok, err := db.LoadSetup(ctx); err == nil && ok {
 		manager.Start(ctx, collector.RuntimeConfig{
 			CPAUpstreamURL: setup.CPAUpstreamURL,
@@ -44,13 +47,14 @@ func main() {
 			Queue:          setup.Queue,
 			PopSide:        setup.PopSide,
 		})
+		scheduler.Start(ctx, setup.CPAUpstreamURL, setup.ManagementKey)
 	} else if err != nil {
 		log.Printf("load setup: %v", err)
 	}
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpapi.New(cfg, db, manager).Handler(),
+		Handler:           httpapi.New(cfg, db, manager, scheduler).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -65,6 +69,7 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	manager.Stop()
+	scheduler.Stop()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown: %v", err)
 	}

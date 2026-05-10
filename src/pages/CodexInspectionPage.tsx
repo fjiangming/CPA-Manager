@@ -13,6 +13,7 @@ import {
   IconExternalLink,
   IconRefreshCw,
   IconSettings,
+  IconTimer,
   IconTrash2,
 } from '@/components/ui/icons';
 import {
@@ -862,6 +863,10 @@ export function CodexInspectionPage() {
             <Link to="/monitoring" className={styles.quickLink}>
               <IconExternalLink size={14} />
               <span>{t('monitoring.codex_inspection_back')}</span>
+            </Link>
+            <Link to="/monitoring/codex-inspection/scheduled" className={styles.quickLink}>
+              <IconTimer size={14} />
+              <span>{t('monitoring.codex_inspection_scheduled')}</span>
             </Link>
             <button
               type="button"

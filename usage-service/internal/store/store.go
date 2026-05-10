@@ -131,6 +131,31 @@ func (s *Store) init() error {
 			updated_at_ms integer not null,
 			synced_at_ms integer
 		)`,
+		`create table if not exists inspection_schedule (
+			id integer primary key check (id = 1),
+			config_json text not null,
+			updated_at_ms integer not null
+		)`,
+		`create table if not exists inspection_history (
+			id integer primary key autoincrement,
+			trigger_type text not null default 'scheduled',
+			started_at_ms integer not null,
+			finished_at_ms integer not null,
+			total_accounts integer not null default 0,
+			probed_accounts integer not null default 0,
+			delete_count integer not null default 0,
+			disable_count integer not null default 0,
+			enable_count integer not null default 0,
+			keep_count integer not null default 0,
+			executed integer not null default 0,
+			execute_success integer not null default 0,
+			execute_failed integer not null default 0,
+			schedule_json text not null,
+			details_json text not null,
+			error text,
+			created_at_ms integer not null
+		)`,
+		`create index if not exists idx_inspection_history_started on inspection_history(started_at_ms desc)`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.Exec(statement); err != nil {
@@ -544,3 +569,181 @@ func nullInt(value *int64) any {
 func (s Setup) String() string {
 	return fmt.Sprintf("upstream=%s queue=%s popSide=%s", s.CPAUpstreamURL, s.Queue, s.PopSide)
 }
+
+// --- Inspection Schedule & History ---
+
+func (s *Store) SaveInspectionSchedule(ctx context.Context, configJSON string, updatedAtMS int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO inspection_schedule(id, config_json, updated_at_ms)
+		 VALUES(1, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET config_json = excluded.config_json, updated_at_ms = excluded.updated_at_ms`,
+		configJSON, updatedAtMS)
+	return err
+}
+
+func (s *Store) LoadInspectionSchedule(ctx context.Context) (string, bool, error) {
+	var raw string
+	err := s.db.QueryRowContext(ctx, `SELECT config_json FROM inspection_schedule WHERE id = 1`).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return raw, true, nil
+}
+
+
+type InspectionHistoryRow struct {
+	Trigger        string
+	StartedAtMS    int64
+	FinishedAtMS   int64
+	TotalAccounts  int
+	ProbedAccounts int
+	DeleteCount    int
+	DisableCount   int
+	EnableCount    int
+	KeepCount      int
+	Executed       bool
+	ExecuteSuccess int
+	ExecuteFailed  int
+	ScheduleJSON   string
+	DetailsJSON    string
+	Error          string
+}
+
+func (s *Store) InsertInspectionHistory(ctx context.Context, row InspectionHistoryRow) (int64, error) {
+	executed := 0
+	if row.Executed {
+		executed = 1
+	}
+	result, err := s.db.ExecContext(ctx,
+		`INSERT INTO inspection_history(
+			trigger_type, started_at_ms, finished_at_ms,
+			total_accounts, probed_accounts,
+			delete_count, disable_count, enable_count, keep_count,
+			executed, execute_success, execute_failed,
+			schedule_json, details_json, error, created_at_ms
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		row.Trigger, row.StartedAtMS, row.FinishedAtMS,
+		row.TotalAccounts, row.ProbedAccounts,
+		row.DeleteCount, row.DisableCount, row.EnableCount, row.KeepCount,
+		executed, row.ExecuteSuccess, row.ExecuteFailed,
+		row.ScheduleJSON, row.DetailsJSON, nullString(row.Error),
+		time.Now().UnixMilli())
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
+}
+
+type InspectionHistorySummaryRow struct {
+	ID             int64
+	Trigger        string
+	StartedAtMS    int64
+	FinishedAtMS   int64
+	TotalAccounts  int
+	ProbedAccounts int
+	DeleteCount    int
+	DisableCount   int
+	EnableCount    int
+	KeepCount      int
+	Executed       bool
+	ExecuteSuccess int
+	ExecuteFailed  int
+	Error          string
+}
+
+func (s *Store) ListInspectionHistory(ctx context.Context, limit int) ([]InspectionHistorySummaryRow, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, trigger_type, started_at_ms, finished_at_ms,
+			total_accounts, probed_accounts,
+			delete_count, disable_count, enable_count, keep_count,
+			executed, execute_success, execute_failed, error
+		 FROM inspection_history
+		 ORDER BY started_at_ms DESC
+		 LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []InspectionHistorySummaryRow
+	for rows.Next() {
+		var r InspectionHistorySummaryRow
+		var executed int
+		var errText *string
+		if err := rows.Scan(
+			&r.ID, &r.Trigger, &r.StartedAtMS, &r.FinishedAtMS,
+			&r.TotalAccounts, &r.ProbedAccounts,
+			&r.DeleteCount, &r.DisableCount, &r.EnableCount, &r.KeepCount,
+			&executed, &r.ExecuteSuccess, &r.ExecuteFailed, &errText,
+		); err != nil {
+			return nil, err
+		}
+		r.Executed = executed != 0
+		if errText != nil {
+			r.Error = *errText
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
+
+type InspectionHistoryDetailRow struct {
+	InspectionHistorySummaryRow
+	ScheduleJSON string
+	DetailsJSON  string
+}
+
+func (s *Store) GetInspectionHistory(ctx context.Context, id int64) (*InspectionHistoryDetailRow, error) {
+	var r InspectionHistoryDetailRow
+	var executed int
+	var errText *string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, trigger_type, started_at_ms, finished_at_ms,
+			total_accounts, probed_accounts,
+			delete_count, disable_count, enable_count, keep_count,
+			executed, execute_success, execute_failed,
+			schedule_json, details_json, error
+		 FROM inspection_history WHERE id = ?`, id).Scan(
+		&r.ID, &r.Trigger, &r.StartedAtMS, &r.FinishedAtMS,
+		&r.TotalAccounts, &r.ProbedAccounts,
+		&r.DeleteCount, &r.DisableCount, &r.EnableCount, &r.KeepCount,
+		&executed, &r.ExecuteSuccess, &r.ExecuteFailed,
+		&r.ScheduleJSON, &r.DetailsJSON, &errText,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	r.Executed = executed != 0
+	if errText != nil {
+		r.Error = *errText
+	}
+	return &r, nil
+}
+
+func (s *Store) UpdateInspectionHistoryExecution(ctx context.Context, id int64, detailsJSON string, success, failed int) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE inspection_history SET executed = 1, execute_success = ?, execute_failed = ?, details_json = ? WHERE id = ?`,
+		success, failed, detailsJSON, id)
+	return err
+}
+
+func (s *Store) PruneInspectionHistory(ctx context.Context, keep int) error {
+	if keep <= 0 {
+		keep = 100
+	}
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM inspection_history WHERE id NOT IN (
+			SELECT id FROM inspection_history ORDER BY started_at_ms DESC LIMIT ?
+		)`, keep)
+	return err
+}
+

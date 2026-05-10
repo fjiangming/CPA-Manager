@@ -17,6 +17,7 @@ import (
 
 	"github.com/seakee/cpa-manager/usage-service/internal/collector"
 	"github.com/seakee/cpa-manager/usage-service/internal/config"
+	"github.com/seakee/cpa-manager/usage-service/internal/inspection"
 	"github.com/seakee/cpa-manager/usage-service/internal/store"
 	"github.com/seakee/cpa-manager/usage-service/internal/usage"
 )
@@ -28,6 +29,7 @@ type Server struct {
 	cfg       config.Config
 	store     *store.Store
 	collector *collector.Manager
+	scheduler *inspection.Scheduler
 	startedAt int64
 }
 
@@ -54,11 +56,12 @@ type modelPricesSyncRequest struct {
 	Models []string `json:"models"`
 }
 
-func New(cfg config.Config, store *store.Store, collector *collector.Manager) *Server {
+func New(cfg config.Config, store *store.Store, collector *collector.Manager, scheduler *inspection.Scheduler) *Server {
 	return &Server{
 		cfg:       cfg,
 		store:     store,
 		collector: collector,
+		scheduler: scheduler,
 		startedAt: time.Now().UnixMilli(),
 	}
 }
@@ -78,6 +81,10 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		s.writeCORS(w, r)
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/v0/management/inspection") {
+		s.withCORS(s.handleInspection)(w, r)
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/v0/management/model-prices") {
